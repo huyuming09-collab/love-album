@@ -243,7 +243,7 @@
 
     for (let i = 0; i < PHOTO_COUNT; i++) {
         const frame = new THREE.Group();
-        const photoUrl = `./new photos/${fallbackNames[i]}.jpg`;
+        const photoUrl = `./new-photos/${fallbackNames[i]}.jpg`;
         const realTex = textureLoader.load(photoUrl, (texture) => {
             const imgAspect = texture.image.width / texture.image.height;
             const planeAspect = PHOTO_W / PHOTO_H;
