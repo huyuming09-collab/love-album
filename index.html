@@ -1,0 +1,908 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 纪念日相册 | 终极修复版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'PingFang SC', sans-serif; }
+        #webcam { display: none; }
+        #ui-layer {
+            position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.9); text-align: center; pointer-events: none; z-index: 10;
+            text-shadow: 0 0 5px rgba(0,0,0,0.8);
+        }
+        .controls { margin-top: 10px; pointer-events: auto; }
+        button {
+            background: rgba(100, 180, 255, 0.15); border: 1px solid rgba(100, 180, 255, 0.4);
+            color: #baddff; padding: 8px 20px; margin: 0 8px; border-radius: 20px; cursor: pointer; transition: all 0.3s;
+            backdrop-filter: blur(4px);
+        }
+        button.active { background: rgba(100, 180, 255, 0.8); color: #000000; font-weight: bold; border-color: transparent; box-shadow: 0 0 15px rgba(100,180,255,0.6); }
+
+        /* --- 开场仪式专属样式（星尘汇聚版） --- */
+        #opening-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000000; z-index: 100;
+            display: flex; justify-content: center; align-items: center; text-align: center;
+            opacity: 1; transition: opacity 2.5s ease-in-out; cursor: pointer;
+        }
+        #opening-canvas {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+        }
+        #start-prompt {
+            color: rgba(255, 255, 255, 0.6); font-size: 18px; letter-spacing: 4px;
+            animation: pulse-fade 2s infinite;
+            z-index: 2; position: relative;
+        }
+        #opening-text { display: none; }
+        @keyframes pulse-fade {
+            0%, 100% { opacity: 0.3; transform: scale(0.98); }
+            50% { opacity: 0.8; transform: scale(1.02); }
+        }
+    </style>
+</head>
+<body>
+
+<div id="opening-overlay">
+    <canvas id="opening-canvas"></canvas>
+    <div id="start-prompt">点击开启宇宙</div>
+</div>
+
+<audio id="bgm" src="./audio/a_thousand_years.mp3" loop volume="0"></audio>
+
+<div id="ui-layer">
+    <div id="status-text">系统自检中...</div>
+    <div class="controls">
+        <button id="btn-heart" class="active">凝聚·编织的梦</button>
+        <button id="btn-explode">散落·星辰记忆</button>
+    </div>
+</div>
+<video id="webcam" autoplay playsinline></video>
+<canvas id="renderCanvas"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+
+<script type="module">
+    import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.mjs";
+
+    const mapLinear = (x, a1, a2, b1, b2) => b1 + (x - a1) * (b2 - b1) / (a2 - a1);
+
+    // --- 1. 核心渲染器 ---
+    const canvas = document.getElementById('renderCanvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.0015); 
+
+    const aspect = window.innerWidth / window.innerHeight;
+    const camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 2500); 
+    let baseCameraZ = aspect < 1 ? 210 : 170;
+    let targetCameraZ = baseCameraZ;
+    camera.position.z = baseCameraZ; 
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+    const coreLight = new THREE.PointLight(0x88ccff, 1.5, 500); 
+    scene.add(coreLight);
+
+    const renderScene = new THREE.RenderPass(scene, camera);
+    const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.9); 
+    bloomPass.threshold = 0.9; 
+    
+    const composer = new THREE.EffectComposer(renderer);
+    composer.addPass(renderScene);
+    composer.addPass(bloomPass);
+
+    // --- 3D 极暗星云 ---
+    function createNebulaTexture(colorHex) {
+        const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+        const ctx = c.getContext('2d');
+        const gradient = ctx.createRadialGradient(256, 256, 0, 256, 256, 256);
+        gradient.addColorStop(0, colorHex); 
+        gradient.addColorStop(1, 'rgba(0,0,0,0)'); 
+        ctx.fillStyle = gradient; ctx.fillRect(0, 0, 512, 512);
+        return new THREE.CanvasTexture(c);
+    }
+    const nebulaGroup = new THREE.Group();
+    scene.add(nebulaGroup);
+    const nebulaColors = ['rgba(5, 20, 50, 0.15)', 'rgba(2, 10, 30, 0.2)', 'rgba(0, 15, 40, 0.1)', 'rgba(10, 5, 25, 0.15)'];
+    for(let i=0; i<4; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+            map: createNebulaTexture(nebulaColors[i]),
+            transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1500, 1500), mat); 
+        mesh.position.set((Math.random()-0.5)*500, (Math.random()-0.5)*500, -400 - Math.random()*200);
+        nebulaGroup.add(mesh);
+    }
+
+    // --- 流星雨 ---
+    function createMeteorTexture() {
+        const c = document.createElement('canvas'); c.width = 16; c.height = 256;
+        const ctx = c.getContext('2d');
+        const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+        gradient.addColorStop(0, 'rgba(255, 255, 255, 0)'); 
+        gradient.addColorStop(1, 'rgba(200, 240, 255, 1)'); 
+        ctx.fillStyle = gradient; ctx.fillRect(0, 0, 16, 256);
+        return new THREE.CanvasTexture(c);
+    }
+    const meteorTex = createMeteorTexture();
+    const meteors = [];
+    for (let i = 0; i < 8; i++) {
+        const mat = new THREE.MeshBasicMaterial({ 
+            map: meteorTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide 
+        });
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 120), mat);
+        mesh.position.set(9999, 9999, 9999); 
+        scene.add(mesh);
+        meteors.push({ mesh, active: false, speed: 0 });
+    }
+
+    const starPalette = [
+        new THREE.Color(0xffffff), new THREE.Color(0xffffff), 
+        new THREE.Color(0x00eeff), new THREE.Color(0x66aaff), new THREE.Color(0xaaccff)  
+    ];
+    
+    function createRoundedRect(width, height, radius) {
+        const c = document.createElement('canvas'); c.width = width * 100; c.height = height * 100;
+        const ctx = c.getContext('2d'); ctx.fillStyle = '#ffffff'; ctx.beginPath();
+        ctx.roundRect(0, 0, c.width, c.height, radius * 100); ctx.fill(); return new THREE.CanvasTexture(c);
+    }
+    const PHOTO_W = 15.0; const PHOTO_H = 11.2;
+    const FRAME_W = 15.6; const FRAME_H = 11.8;
+    const roundedAlpha = createRoundedRect(PHOTO_W, PHOTO_H, 0.6);
+    const frameAlpha = createRoundedRect(FRAME_W, FRAME_H, 0.7);
+
+    // --- 核心立体骨架 ---
+    const PHOTO_COUNT = 54; 
+    const photos = [];
+    const photoGroup = new THREE.Group();
+    scene.add(photoGroup);
+
+    function generateHeartData(count) {
+        const data = [];
+        const scale = 4.2; 
+        const layers = [
+            { count: 5,  scale: 0.35, z: -30, tilt: 0.5 },  
+            { count: 11, scale: 0.7,  z: -15, tilt: 0.3 },  
+            { count: 22, scale: 1.0,  z: 0,   tilt: 0.1 }, 
+            { count: 11, scale: 0.7,  z: 15,  tilt: 0.3 },  
+            { count: 5,  scale: 0.35, z: 30,  tilt: 0.5 }   
+        ];
+        let index = 0;
+        for (let l = 0; l < layers.length; l++) {
+            const layer = layers[l];
+            for (let i = 0; i < layer.count; i++) {
+                if (index >= count) break;
+                const t = (i / layer.count) * Math.PI * 2;
+                const x = 16 * Math.pow(Math.sin(t), 3);
+                const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+                const pos = new THREE.Vector3(
+                    x * layer.scale * scale + (Math.random() - 0.5) * 6.0,
+                    y * layer.scale * scale + (Math.random() - 0.5) * 6.0,
+                    layer.z + (Math.random() - 0.5) * 8.0 
+                );
+                const rot = new THREE.Euler(
+                    (Math.random() - 0.5) * layer.tilt * 1.5, 
+                    (Math.random() - 0.5) * layer.tilt * 1.5 + (pos.x > 0 ? 0.15 : -0.15), 
+                    (Math.random() - 0.5) * 0.2 
+                );
+                data.push({ pos, rot });
+                index++;
+            }
+        }
+        return data;
+    }
+    let heartDataList = generateHeartData(PHOTO_COUNT);
+
+    function generateScatterPosition() {
+        const bound = 65; 
+        return new THREE.Vector3(
+            (Math.random() - 0.5) * bound * 2.5,
+            (Math.random() - 0.5) * bound * 2.5,
+            (Math.random() - 0.5) * bound * 2.0
+        );
+    }
+    function shuffleArray(array) {
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [array[i], array[j]] = [array[j], array[i]];
+        }
+    }
+
+    // --- 照片加载 ---
+    const textureLoader = new THREE.TextureLoader();
+    const photoGeometry = new THREE.PlaneGeometry(PHOTO_W, PHOTO_H);
+    const frameGeometry = new THREE.PlaneGeometry(FRAME_W, FRAME_H);
+
+    const fallbackNames = [
+        "微信图片_20260623123841_144_25", "微信图片_20260623123842_145_25", "微信图片_20260623123843_146_25", "微信图片_20260623123844_147_25", "微信图片_20260623123845_148_25",
+        "微信图片_20260623123846_149_25", "微信图片_20260623123847_150_25", "微信图片_20260623123848_151_25", "微信图片_20260623123849_152_25", "微信图片_20260623123850_153_25",
+        "微信图片_20260623123851_154_25", "微信图片_20260623123852_155_25", "微信图片_20260623123853_156_25", "微信图片_20260623123854_157_25", "微信图片_20260623123855_158_25",
+        "微信图片_20260623123856_159_25", "微信图片_20260623123857_160_25", "微信图片_20260623123858_161_25", "微信图片_20260623123858_162_25", "微信图片_20260623123900_163_25",
+        "微信图片_20260623123900_164_25", "微信图片_20260623123901_165_25", "微信图片_20260623123902_166_25", "微信图片_20260623123903_167_25", "微信图片_20260623123904_168_25",
+        "微信图片_20260623123905_169_25", "微信图片_20260623123906_170_25", "微信图片_20260623123907_171_25", "微信图片_20260623123908_172_25", "微信图片_20260623123909_173_25",
+        "微信图片_20260623123910_174_25", "微信图片_20260623123911_175_25", "微信图片_20260623123912_176_25", "微信图片_20260623123913_177_25", "微信图片_20260623123914_178_25",
+        "微信图片_20260623123915_179_25", "微信图片_20260623123916_180_25", "微信图片_20260623123917_181_25", "微信图片_20260623123918_182_25", "微信图片_20260623123919_183_25",
+        "微信图片_20260623123920_184_25", "微信图片_20260623123921_185_25", "微信图片_20260623123922_186_25", "微信图片_20260623123923_187_25", "微信图片_20260623123924_188_25",
+        "微信图片_20260623123925_189_25", "微信图片_20260623123926_190_25", "微信图片_20260623123927_191_25", "微信图片_20260623123928_192_25", "微信图片_20260623123929_193_25",
+        "微信图片_20260623123930_194_25", "微信图片_20260623123931_195_25", "微信图片_20260623123932_196_25", "微信图片_20260623123933_197_25"
+    ];
+
+    for (let i = 0; i < PHOTO_COUNT; i++) {
+        const frame = new THREE.Group();
+        const photoUrl = `./new photos/${fallbackNames[i]}.jpg`;
+        const realTex = textureLoader.load(photoUrl, (texture) => {
+            const imgAspect = texture.image.width / texture.image.height;
+            const planeAspect = PHOTO_W / PHOTO_H;
+            if (imgAspect > planeAspect) {
+                texture.repeat.set(planeAspect / imgAspect, 1);
+                texture.offset.x = (1 - texture.repeat.x) / 2;
+            } else {
+                texture.repeat.set(1, imgAspect / planeAspect);
+                texture.offset.y = (1 - texture.repeat.y) / 2;
+            }
+        });
+        realTex.encoding = THREE.sRGBEncoding; 
+        
+        const backMaterial = new THREE.MeshStandardMaterial({
+            color: 0xccddff, emissive: 0x051025, metalness: 0.8, roughness: 0.2, 
+            alphaMap: frameAlpha, transparent: true, side: THREE.DoubleSide
+        });
+        const border = new THREE.Mesh(frameGeometry, backMaterial);
+        border.position.z = -0.05;
+        frame.add(border);
+        
+        const picMat = new THREE.MeshBasicMaterial({ 
+            map: realTex, alphaMap: roundedAlpha, transparent: true, side: THREE.FrontSide, toneMapped: false 
+        });
+        const pic = new THREE.Mesh(photoGeometry, picMat);
+        frame.add(pic);
+
+        frame.userData = {
+            heartPos: heartDataList[i].pos.clone(), heartRot: heartDataList[i].rot.clone(),
+            scatterPos: generateScatterPosition(),
+            scatterRot: new THREE.Euler((Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, (Math.random()-0.5)*Math.PI*0.6),
+            floatSpeed: Math.random() * 1.5 + 0.5, floatOffset: Math.random() * Math.PI * 2,
+            velocity: new THREE.Vector3(0,0,0) 
+        };
+
+        frame.position.copy(frame.userData.heartPos);
+        frame.rotation.copy(frame.userData.heartRot);
+        photoGroup.add(frame);
+        photos.push(frame);
+    }
+
+    // --- 心形跟随轮廓系统 ---
+    const innerCount = 1000; const outerCount = 1200;
+    const pTargets = []; const pScatters = [];
+    const innerPosArray = new Float32Array(innerCount * 3);
+    const outerPosArray = new Float32Array(outerCount * 3);
+    const innerColorArray = new Float32Array(innerCount * 3);
+    const outerColorArray = new Float32Array(outerCount * 3);
+    
+    for(let i=0; i<innerCount; i++) {
+        const t = Math.random() * Math.PI * 2;
+        const x = 16 * Math.pow(Math.sin(t), 3); const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+        pTargets.push(new THREE.Vector3(x * 4.3 + (Math.random()-0.5)*20, y * 4.3 + (Math.random()-0.5)*20, (Math.random()-0.5)*30));
+        const c = starPalette[Math.floor(Math.random() * starPalette.length)];
+        innerColorArray[i*3] = c.r; innerColorArray[i*3+1] = c.g; innerColorArray[i*3+2] = c.b;
+    }
+    for(let i=0; i<outerCount; i++) {
+        const t = Math.random() * Math.PI * 2;
+        const x = 16 * Math.pow(Math.sin(t), 3); const y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+        const spread = 20 + Math.random() * 35;
+        pTargets.push(new THREE.Vector3(x * 4.8 + (Math.random()-0.5)*spread, y * 4.8 + (Math.random()-0.5)*spread, (Math.random()-0.5)*80));
+        const c = starPalette[Math.floor(Math.random() * starPalette.length)];
+        outerColorArray[i*3] = c.r; outerColorArray[i*3+1] = c.g; outerColorArray[i*3+2] = c.b;
+    }
+
+    for(let i=0; i<innerCount; i++) {
+        const sx = (Math.random() - 0.5) * 250; const sy = (Math.random() - 0.5) * 250; const sz = (Math.random() - 0.5) * 250;
+        pScatters.push(new THREE.Vector3(sx, sy, sz));
+        innerPosArray[i*3] = sx; innerPosArray[i*3+1] = sy; innerPosArray[i*3+2] = sz;
+    }
+    for(let i=0; i<outerCount; i++) {
+        const sx = (Math.random() - 0.5) * 300; const sy = (Math.random() - 0.5) * 300; const sz = (Math.random() - 0.5) * 300;
+        pScatters.push(new THREE.Vector3(sx, sy, sz));
+        outerPosArray[i*3] = sx; outerPosArray[i*3+1] = sy; outerPosArray[i*3+2] = sz;
+    }
+
+    const innerGeo = new THREE.BufferGeometry(); 
+    innerGeo.setAttribute('position', new THREE.BufferAttribute(innerPosArray, 3));
+    innerGeo.setAttribute('color', new THREE.BufferAttribute(innerColorArray, 3));
+    const innerMat = new THREE.PointsMaterial({ size: 1.2, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
+    const innerMesh = new THREE.Points(innerGeo, innerMat); photoGroup.add(innerMesh);
+
+    const outerGeo = new THREE.BufferGeometry(); 
+    outerGeo.setAttribute('position', new THREE.BufferAttribute(outerPosArray, 3));
+    outerGeo.setAttribute('color', new THREE.BufferAttribute(outerColorArray, 3));
+    const outerMat = new THREE.PointsMaterial({ size: 2.8, vertexColors: true, transparent: true, opacity: 1.0, blending: THREE.AdditiveBlending, depthWrite: false });
+    const outerMesh = new THREE.Points(outerGeo, outerMat); photoGroup.add(outerMesh);
+
+    // --- 有机游弋星辰 ---
+    const wandererCount = 250; 
+    const wandererPos = new Float32Array(wandererCount * 3);
+    const wandererColor = new Float32Array(wandererCount * 3);
+    const wandererVel = new Float32Array(wandererCount * 3); 
+    const wandererPhase = new Float32Array(wandererCount * 3); 
+
+    for (let i = 0; i < wandererCount; i++) {
+        wandererPos[i*3] = (Math.random() - 0.5) * 1000;
+        wandererPos[i*3+1] = (Math.random() - 0.5) * 1000;
+        wandererPos[i*3+2] = (Math.random() - 0.5) * 600 - 100;
+        const c = starPalette[Math.floor(Math.random() * starPalette.length)];
+        wandererColor[i*3] = c.r; wandererColor[i*3+1] = c.g; wandererColor[i*3+2] = c.b;
+        wandererVel[i*3] = (Math.random() - 0.5) * 0.4; wandererVel[i*3+1] = (Math.random() - 0.5) * 0.4; wandererVel[i*3+2] = (Math.random() - 0.5) * 0.4;
+        wandererPhase[i*3] = Math.random() * Math.PI * 2; wandererPhase[i*3+1] = Math.random() * Math.PI * 2; wandererPhase[i*3+2] = Math.random() * Math.PI * 2;
+    }
+    const wandererGeo = new THREE.BufferGeometry(); wandererGeo.setAttribute('position', new THREE.BufferAttribute(wandererPos, 3));
+    wandererGeo.setAttribute('color', new THREE.BufferAttribute(wandererColor, 3));
+    const wandererMat = new THREE.PointsMaterial({ size: 1.8, vertexColors: true, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+    const wandererMesh = new THREE.Points(wandererGeo, wandererMat); scene.add(wandererMesh);
+
+    // --- 背景深空同化 ---
+    const bgParticleCount = 6000; 
+    const bgPosArray = new Float32Array(bgParticleCount * 3);
+    const bgColorArray = new Float32Array(bgParticleCount * 3);
+    for(let i = 0; i < bgParticleCount; i++) {
+        bgPosArray[i*3] = (Math.random() - 0.5) * 900;
+        bgPosArray[i*3+1] = (Math.random() - 0.5) * 900;
+        bgPosArray[i*3+2] = (Math.random() - 0.5) * 900;
+        const c = starPalette[Math.floor(Math.random() * starPalette.length)];
+        bgColorArray[i*3] = c.r; bgColorArray[i*3+1] = c.g; bgColorArray[i*3+2] = c.b;
+    }
+    const bgGeo = new THREE.BufferGeometry(); 
+    bgGeo.setAttribute('position', new THREE.BufferAttribute(bgPosArray, 3));
+    bgGeo.setAttribute('color', new THREE.BufferAttribute(bgColorArray, 3));
+    const bgMat = new THREE.PointsMaterial({ size: 2.2, vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
+    const bgMesh = new THREE.Points(bgGeo, bgMat); scene.add(bgMesh);
+
+
+    // --- 状态机 ---
+    let currentState = 'heart'; 
+    let targetHandX = 0, targetHandY = 0;
+    const clock = new THREE.Clock();
+
+    const btnHeart = document.getElementById('btn-heart');
+    const btnExplode = document.getElementById('btn-explode');
+    const statusText = document.getElementById('status-text');
+
+    function setState(state) {
+        if (currentState === state) return; 
+        currentState = state;
+        btnHeart.classList.toggle('active', state === 'heart');
+        btnExplode.classList.toggle('active', state === 'scatter');
+        
+        photos.forEach(photo => {
+            photo.userData.velocity.set(0,0,0);
+            if (state === 'scatter') {
+                photo.userData.scatterPos = generateScatterPosition();
+                photo.userData.scatterRot.set((Math.random()-0.5)*0.2, (Math.random()-0.5)*0.2, (Math.random()-0.5)*Math.PI*0.6);
+            }
+        });
+        
+        if (state === 'heart') {
+            shuffleArray(heartDataList);
+            photos.forEach((photo, index) => {
+                photo.userData.heartPos = heartDataList[index].pos.clone();
+                photo.userData.heartRot = heartDataList[index].rot.clone();
+            });
+        }
+    }
+
+    btnHeart.addEventListener('click', () => setState('heart'));
+    btnExplode.addEventListener('click', () => setState('scatter'));
+
+    // --- 【修复核心：恢复最初始、最稳定的手势及摄像头逻辑】 ---
+    const video = document.getElementById('webcam');
+    let gestureRecognizer;
+
+    async function initMediaPipe() {
+        try {
+            statusText.innerText = "正在加载手势引擎...";
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 1
+            });
+            startCamera();
+        } catch (e) {
+            console.error("MediaPipe Error:", e);
+            statusText.innerText = "AI 引擎加载失败，请刷新";
+        }
+    }
+
+    async function startCamera() {
+        try {
+            statusText.innerText = "正在请求摄像头权限...";
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            video.addEventListener("loadeddata", predictWebcam);
+            statusText.innerText = "就绪：张开/握拳。靠近或远离镜头可缩放。";
+        } catch (e) { 
+            statusText.innerText = "无摄像头权限，手势随动已禁用"; 
+            console.error("Camera Error:", e);
+        }
+    }
+
+    initMediaPipe();
+
+    let lastVideoTime = -1; let gestureCooldown = 0;
+    function predictWebcam() {
+        if (video.currentTime !== lastVideoTime) {
+            lastVideoTime = video.currentTime;
+            if(gestureRecognizer) { 
+                const results = gestureRecognizer.recognizeForVideo(video, performance.now());
+                if (results.gestures.length > 0) {
+                    const gesture = results.gestures[0][0].categoryName;
+                    const now = Date.now();
+                    if (now - gestureCooldown > 1000) { 
+                        if (gesture === "Open_Palm") { setState('scatter'); gestureCooldown = now; } 
+                        else if (gesture === "Closed_Fist") { setState('heart'); gestureCooldown = now; }
+                    }
+                    const lm = results.landmarks[0][9];
+                    targetHandX = (lm.x - 0.5) * 2.5; targetHandY = (lm.y - 0.5) * 2.5;
+
+                    const handSize = Math.abs(results.landmarks[0][0].y - results.landmarks[0][9].y);
+                    targetCameraZ = mapLinear(handSize, 0.1, 0.4, baseCameraZ + 50, baseCameraZ - 70);
+                    targetCameraZ = Math.max(80, Math.min(targetCameraZ, baseCameraZ + 60)); 
+                } else {
+                    targetHandX *= 0.95; targetHandY *= 0.95; targetCameraZ += (baseCameraZ - targetCameraZ) * 0.1; 
+                }
+            }
+        }
+        requestAnimationFrame(predictWebcam);
+    }
+
+    // --- 开场星尘汇聚仪式 (Canvas 2D 粒子系统) ---
+    const bgm = document.getElementById('bgm');
+    const overlay = document.getElementById('opening-overlay');
+    const startPrompt = document.getElementById('start-prompt');
+    const openingCanvas = document.getElementById('opening-canvas');
+    const octx = openingCanvas.getContext('2d');
+
+    function resizeOpeningCanvas() {
+        openingCanvas.width = window.innerWidth * Math.min(window.devicePixelRatio, 2);
+        openingCanvas.height = window.innerHeight * Math.min(window.devicePixelRatio, 2);
+        openingCanvas.style.width = window.innerWidth + 'px';
+        openingCanvas.style.height = window.innerHeight + 'px';
+        octx.scale(Math.min(window.devicePixelRatio, 2), Math.min(window.devicePixelRatio, 2));
+    }
+    resizeOpeningCanvas();
+
+    const W = () => window.innerWidth;
+    const H = () => window.innerHeight;
+
+    const PARTICLE_COUNT = 100;
+    let particles = []; 
+
+    class StarParticle {
+        constructor() {
+            this.reset();
+        }
+        reset() {
+            this.x = Math.random() * W();
+            this.y = Math.random() * H();
+            this.baseX = this.x;
+            this.baseY = this.y;
+            this.size = Math.random() * 2.5 + 0.5;
+            this.alpha = Math.random() * 0.6 + 0.2;
+            this.baseAlpha = this.alpha;
+            this.vx = (Math.random() - 0.5) * 0.3;
+            this.vy = (Math.random() - 0.5) * 0.3;
+            this.phase = Math.random() * Math.PI * 2;
+            this.phaseSpeed = Math.random() * 0.02 + 0.01;
+            const colors = ['255,255,255', '200,240,255', '160,230,255', '180,220,255', '220,240,255'];
+            this.color = colors[Math.floor(Math.random() * colors.length)];
+            this.state = 'floating'; 
+            this.targetX = 0;
+            this.targetY = 0;
+            this.attractSpeed = 0;
+        }
+    }
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        particles.push(new StarParticle());
+    }
+
+    let textSamplePoints = [];
+    const textToType = "正在搭建属于我们的宇宙...";
+
+    function sampleTextPixels() {
+        const offscreen = document.createElement('canvas');
+        offscreen.width = W();
+        offscreen.height = H();
+        const offCtx = offscreen.getContext('2d');
+
+        offCtx.fillStyle = '#ffffff';
+        offCtx.font = 'bold ' + Math.floor(W() * 0.035) + 'px "PingFang SC", "Microsoft YaHei", sans-serif';
+        
+        const fullTextWidth = offCtx.measureText(textToType).width;
+        const startX = (W() - fullTextWidth) / 2;
+        const textY = H() / 2;
+
+        offCtx.textAlign = 'left';
+        offCtx.textBaseline = 'middle';
+        offCtx.fillText(textToType, startX, textY);
+
+        const imageData = offCtx.getImageData(0, 0, offscreen.width, offscreen.height);
+        const data = imageData.data;
+        const points = [];
+        const step = 6; 
+        for (let y = 0; y < offscreen.height; y += step) {
+            for (let x = 0; x < offscreen.width; x += step) {
+                const idx = (y * offscreen.width + x) * 4;
+                if (data[idx + 3] > 128) {
+                    points.push({ x: x / Math.min(window.devicePixelRatio, 2), y: y / Math.min(window.devicePixelRatio, 2) });
+                }
+            }
+        }
+        return points;
+    }
+
+    let openingPhase = 'idle'; 
+    let charIndex = 0;
+    let typeTimer = 0;
+    let breathingTimer = 0;
+    let scatteringTimer = 0;
+    const TYPE_INTERVAL = 160; 
+    const BREATHING_DURATION = 2000; 
+    const SCATTER_DURATION = 2500; 
+
+    overlay.addEventListener('click', function startJourney() {
+        overlay.removeEventListener('click', startJourney);
+        startPrompt.style.display = 'none';
+        openingPhase = 'floating';
+        
+        bgm.volume = 0;
+        bgm.play().catch(e => console.log("BGM 播放拦截:", e));
+    });
+
+    let lastTime = 0;
+    let typeAccum = 0;
+
+    function animateOpening(timestamp) {
+        if (openingPhase === 'done') return;
+        const dt = timestamp - lastTime;
+        lastTime = timestamp;
+        octx.clearRect(0, 0, W(), H());
+
+        let displayText = '';
+        if (openingPhase === 'typing' || openingPhase === 'breathing' || openingPhase === 'scattering') {
+            displayText = textToType.substring(0, charIndex);
+        }
+
+        if (openingPhase === 'typing') {
+            typeAccum += dt;
+            if (typeAccum >= TYPE_INTERVAL) {
+                typeAccum -= TYPE_INTERVAL;
+                charIndex++;
+                if (charIndex >= textToType.length) {
+                    openingPhase = 'breathing';
+                    breathingTimer = 0;
+                    textSamplePoints = sampleTextPixels();
+                    particles.forEach((p, i) => {
+                        if (p.state !== 'spark' && textSamplePoints.length > 0) {
+                            const target = textSamplePoints[i % textSamplePoints.length];
+                            p.targetX = target.x;
+                            p.targetY = target.y;
+                            p.state = 'attracted';
+                            p.attractSpeed = 0.01 + Math.random() * 0.02;
+                        }
+                    });
+                }
+            }
+        }
+
+        if (openingPhase === 'breathing') {
+            breathingTimer += dt;
+            if (breathingTimer >= BREATHING_DURATION) {
+                openingPhase = 'scattering';
+                scatteringTimer = 0;
+                particles.forEach(p => {
+                    if (p.state !== 'spark') {
+                        p.state = 'scattering';
+                        p.vx = (Math.random() - 0.5) * 3;
+                        p.vy = (Math.random() - 0.5) * 3;
+                    }
+                });
+            }
+        }
+
+        if (openingPhase === 'scattering') {
+            scatteringTimer += dt;
+            if (scatteringTimer >= SCATTER_DURATION) {
+                openingPhase = 'done';
+                finishOpening();
+                return;
+            }
+        }
+
+        if (openingPhase === 'floating') {
+            typeAccum += dt;
+            if (typeAccum >= 800) { 
+                openingPhase = 'typing';
+                typeAccum = 0;
+            }
+        }
+
+        const time = timestamp * 0.001;
+        particles.forEach(p => {
+            if (p.state === 'floating') {
+                p.x += p.vx + Math.sin(time + p.phase) * 0.15;
+                p.y += p.vy + Math.cos(time * 0.7 + p.phase) * 0.15;
+                p.alpha = p.baseAlpha * (0.5 + 0.5 * Math.sin(time * 2 + p.phase));
+                if (p.x < 0 || p.x > W()) p.vx *= -1;
+                if (p.y < 0 || p.y > H()) p.vy *= -1;
+                p.x = Math.max(0, Math.min(W(), p.x));
+                p.y = Math.max(0, Math.min(H(), p.y));
+            }
+            else if (p.state === 'attracted') {
+                p.x += (p.targetX - p.x) * p.attractSpeed;
+                p.y += (p.targetY - p.y) * p.attractSpeed;
+                p.alpha = 0.7 + 0.3 * Math.sin(time * 3 + p.phase);
+            }
+            else if (p.state === 'breathing') {
+                p.x += (p.targetX - p.x) * 0.05;
+                p.y += (p.targetY - p.y) * 0.05;
+                p.alpha = 0.5 + 0.5 * Math.sin(time * 2 + p.phase);
+            }
+            else if (p.state === 'scattering') {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.alpha *= 0.985;
+                p.size *= 0.998;
+            }
+            else if (p.state === 'spark') {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vy += 0.08; 
+                p.alpha -= 0.03; 
+                p.size *= 0.95;
+            }
+
+            if (p.alpha > 0) {
+                octx.save();
+                octx.globalAlpha = Math.max(0, p.alpha);
+                octx.fillStyle = `rgba(${p.color}, 1)`;
+                octx.shadowColor = `rgba(${p.color}, 0.8)`;
+                octx.shadowBlur = p.state === 'spark' ? 12 : 8; 
+                octx.beginPath();
+                octx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                octx.fill();
+                octx.restore();
+            }
+        });
+
+        particles = particles.filter(p => !(p.state === 'spark' && p.alpha <= 0));
+
+        if ((openingPhase === 'typing' || openingPhase === 'breathing') && displayText.length > 0) {
+            octx.save();
+            const fontSize = Math.floor(W() * 0.035);
+            octx.font = 'bold ' + fontSize + 'px "PingFang SC", "Microsoft YaHei", sans-serif';
+            
+            const fullTextWidth = octx.measureText(textToType).width;
+            const currentTextWidth = octx.measureText(displayText).width;
+            const startX = (W() - fullTextWidth) / 2;
+            const textY = H() / 2;
+
+            octx.textAlign = 'left';
+            octx.textBaseline = 'middle';
+
+            const gradient = octx.createLinearGradient(startX, 0, startX + fullTextWidth, 0);
+            gradient.addColorStop(0, '#ffffff'); 
+            gradient.addColorStop(0.5, '#cceeff');
+            gradient.addColorStop(1, '#00bfff'); 
+
+            octx.fillStyle = gradient;
+
+            octx.shadowColor = '#00e5ff';
+            octx.shadowBlur = 15;
+            octx.fillText(displayText, startX, textY);
+            
+            octx.shadowBlur = 40;
+            octx.globalAlpha = 0.6;
+            octx.fillText(displayText, startX, textY);
+
+            octx.shadowBlur = 80;
+            octx.globalAlpha = 0.3;
+            octx.fillText(displayText, startX, textY);
+            octx.restore();
+
+            if (openingPhase === 'typing') {
+                const cursorX = startX + currentTextWidth + 8;
+                
+                octx.save();
+                octx.fillStyle = '#ffffff';
+                octx.shadowColor = '#00ffff';
+                octx.shadowBlur = 20;
+                octx.globalAlpha = 0.7 + 0.3 * Math.sin(time * 20);
+                octx.fillRect(cursorX, textY - fontSize * 0.45, 4, fontSize * 0.9);
+                octx.restore();
+
+                if (Math.random() > 0.3) { 
+                    for(let s=0; s<3; s++) {
+                        let spark = new StarParticle();
+                        spark.x = cursorX;
+                        spark.y = textY + (Math.random() - 0.5) * fontSize * 0.7;
+                        spark.vx = (Math.random() * -4) - 1; 
+                        spark.vy = (Math.random() - 0.5) * 6;
+                        spark.size = Math.random() * 2.5 + 1;
+                        spark.color = '150,255,255';
+                        spark.state = 'spark';
+                        spark.alpha = 1;
+                        particles.push(spark);
+                    }
+                }
+            }
+        }
+
+        if (openingPhase === 'scattering') {
+            const fadeAlpha = 1 - scatteringTimer / SCATTER_DURATION;
+            if (fadeAlpha > 0 && displayText.length > 0) {
+                octx.save();
+                const fontSize = Math.floor(W() * 0.035);
+                octx.font = 'bold ' + fontSize + 'px "PingFang SC", "Microsoft YaHei", sans-serif';
+                const fullTextWidth = octx.measureText(textToType).width;
+                const startX = (W() - fullTextWidth) / 2;
+                const textY = H() / 2;
+
+                octx.textAlign = 'left';
+                octx.textBaseline = 'middle';
+                octx.globalAlpha = fadeAlpha * 0.6;
+                octx.shadowColor = '#00e5ff';
+                octx.shadowBlur = 50 * fadeAlpha;
+                octx.fillStyle = '#ffffff';
+                octx.fillText(displayText, startX, textY);
+                octx.restore();
+            }
+        }
+        requestAnimationFrame(animateOpening);
+    }
+    requestAnimationFrame(animateOpening);
+
+    function finishOpening() {
+        overlay.style.opacity = '0';
+        
+        let vol = 0;
+        let fadeInterval = setInterval(() => {
+            vol += 0.05;
+            if (vol >= 1.0) { 
+                bgm.volume = 1.0; 
+                clearInterval(fadeInterval);
+            } else { 
+                bgm.volume = vol; 
+            }
+        }, 150);
+
+        setTimeout(() => {
+            overlay.style.display = 'none';
+        }, 2500); 
+    }
+
+    // --- 7. 动画主引擎 ---
+    function animate() {
+        requestAnimationFrame(animate);
+        const time = clock.getElapsedTime();
+
+        nebulaGroup.children.forEach((nebula, index) => {
+            nebula.rotation.z = time * (0.05 + index * 0.02) * (index % 2 === 0 ? 1 : -1);
+        });
+
+        const wPos = wandererGeo.attributes.position.array;
+        for (let i = 0; i < wandererCount; i++) {
+            wPos[i*3] += wandererVel[i*3] + Math.sin(time * 0.5 + wandererPhase[i*3]) * 0.2;
+            wPos[i*3+1] += wandererVel[i*3+1] + Math.cos(time * 0.3 + wandererPhase[i*3+1]) * 0.2;
+            wPos[i*3+2] += wandererVel[i*3+2] + Math.sin(time * 0.4 + wandererPhase[i*3+2]) * 0.2;
+            if (wPos[i*3] > 600 || wPos[i*3] < -600) wandererVel[i*3] *= -1;
+            if (wPos[i*3+1] > 600 || wPos[i*3+1] < -600) wandererVel[i*3+1] *= -1;
+            if (wPos[i*3+2] > 200 || wPos[i*3+2] < -800) wandererVel[i*3+2] *= -1;
+        }
+        wandererGeo.attributes.position.needsUpdate = true;
+
+        if (Math.random() < 0.015) { 
+            const m = meteors.find(m => !m.active);
+            if (m) {
+                m.active = true;
+                m.mesh.position.set(400 + Math.random()*200, 300 + Math.random()*200, (Math.random()-0.5)*200 - 100);
+                m.speed = 12 + Math.random() * 8; 
+                m.mesh.rotation.z = -Math.PI / 4; 
+            }
+        }
+        meteors.forEach(m => {
+            if(m.active) {
+                m.mesh.position.x -= m.speed; m.mesh.position.y -= m.speed; 
+                if(m.mesh.position.y < -400) m.active = false; 
+            }
+        });
+
+        const autoRotateX = Math.sin(time * 0.3) * 0.15;
+        const autoRotateY = Math.cos(time * 0.2) * 0.15;
+
+        photoGroup.rotation.y += (targetHandX + autoRotateY - photoGroup.rotation.y) * 0.05;
+        photoGroup.rotation.x += (targetHandY + autoRotateX - photoGroup.rotation.x) * 0.05;
+        
+        camera.position.x += (targetHandX * 15 - camera.position.x) * 0.02;
+        camera.position.z += (targetCameraZ - camera.position.z) * 0.05;
+        camera.lookAt(scene.position);
+
+        const pulseTime = (time * 1.1) % 1.0; 
+        const heartBeatScale = 1 + Math.exp(-Math.pow(pulseTime - 0.1, 2)*200)*0.08 + Math.exp(-Math.pow(pulseTime - 0.35, 2)*150)*0.04;
+        
+        coreLight.intensity = 0.8 + Math.exp(-Math.pow(pulseTime - 0.1, 2)*200)*0.5;
+
+        const isScatter = currentState === 'scatter';
+
+        photos.forEach(photo => {
+            const data = photo.userData;
+            const targetP = isScatter ? data.scatterPos : data.heartPos;
+            const targetR = isScatter ? data.scatterRot : data.heartRot;
+
+            if (isScatter) {
+                photo.position.lerp(targetP, 0.03); 
+            } else {
+                const tension = 0.035; const damping = 0.88; 
+                data.velocity.x += (targetP.x - photo.position.x) * tension;
+                data.velocity.y += (targetP.y - photo.position.y) * tension;
+                data.velocity.z += (targetP.z - photo.position.z) * tension;
+                data.velocity.multiplyScalar(damping);
+                photo.position.add(data.velocity);
+            }
+            photo.rotation.x += (targetR.x - photo.rotation.x) * 0.04;
+            photo.rotation.y += (targetR.y - photo.rotation.y) * 0.04;
+            photo.rotation.z += (targetR.z - photo.rotation.z) * 0.04;
+
+            photo.position.y += Math.sin(time * data.floatSpeed + data.floatOffset) * 0.04;
+        });
+        
+        photoGroup.scale.lerp(isScatter ? new THREE.Vector3(1, 1, 1) : new THREE.Vector3(heartBeatScale, heartBeatScale, heartBeatScale), 0.3);
+
+        const lerpFactor = isScatter ? 0.03 : 0.04; 
+        const iPos = innerGeo.attributes.position.array;
+        for(let i=0; i<innerCount; i++) {
+            const tP = isScatter ? pScatters[i] : pTargets[i];
+            iPos[i*3] += (tP.x - iPos[i*3]) * lerpFactor; iPos[i*3+1] += (tP.y - iPos[i*3+1]) * lerpFactor; iPos[i*3+2] += (tP.z - iPos[i*3+2]) * lerpFactor;
+            if(isScatter) iPos[i*3+1] += Math.sin(time + i)*0.1;
+        }
+        innerGeo.attributes.position.needsUpdate = true;
+
+        const oPos = outerGeo.attributes.position.array;
+        for(let i=0; i<outerCount; i++) {
+            const offset = innerCount;
+            const tP = isScatter ? pScatters[i+offset] : pTargets[i+offset];
+            oPos[i*3] += (tP.x - oPos[i*3]) * lerpFactor; oPos[i*3+1] += (tP.y - oPos[i*3+1]) * lerpFactor; oPos[i*3+2] += (tP.z - oPos[i*3+2]) * lerpFactor;
+            if(isScatter) oPos[i*3+1] += Math.cos(time + i)*0.1;
+        }
+        outerGeo.attributes.position.needsUpdate = true;
+
+        bgMesh.rotation.y = time * 0.01;
+
+        composer.render();
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        baseCameraZ = camera.aspect < 1 ? 210 : 170;
+        camera.position.z = baseCameraZ;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+
+</body>
+</html>

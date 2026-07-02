@@ -1,0 +1,4 @@
+﻿photos/
+*.txt
+docs/
+.DS_Store
